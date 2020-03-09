@@ -17,6 +17,7 @@ build: [
 depends: [
   "ocaml" {>= "4.04.0"}
   "camlp5"
+  "menhir"
   "ppx_tools_versioned"
   "ppx_deriving"
   "ocaml-migrate-parsetree"
