@@ -1,4 +1,4 @@
-(*49a72e1b28868827361916642f9df1acdb97f37b *src/compiler.ml *)
+(*37219566b01d9cf054432dbb29326597d77fb51d *src/compiler.ml *)
 #1 "src/compiler.ml"
 open Util
 module F = Ast.Func
@@ -65,6 +65,7 @@ module Symbols :
     val table : table D.State.component
     val compile_table : table -> D.symbol_table
     val lock : table -> table
+    val unlock : table -> table
     val locked : table -> bool
     val equal : table -> table -> bool
     val build_shift :
@@ -137,6 +138,7 @@ module Symbols :
                                                                     "-32"]
     let locked { locked } = locked
     let lock t = { t with locked = true }
+    let unlock t = assert (locked t); { t with locked = false }
     let uuid { uuid } = uuid
     let equal t1 t2 = (locked t1) && ((locked t2) && ((uuid t1) = (uuid t2)))
     let table =
@@ -180,7 +182,8 @@ module Symbols :
           (if locked
            then
              error
-               ("allocating new global symbol " ^ ((F.show x) ^ "at runtime"));
+               ("allocating new global symbol '" ^
+                  ((F.show x) ^ "' at runtime"));
            (let last_global = last_global - 1 in
             let n = last_global in
             let xx = D.Term.Const n in
@@ -3010,6 +3013,8 @@ let query_of_ast compiler_state assembled_program t =
   let type_abbrevs = assembled_program.Assembled.type_abbrevs in
   let modes = C.Map.map fst assembled_program.Assembled.modes in
   let active_macros = assembled_program.Assembled.toplevel_macros in
+  let compiler_state =
+    State.update Symbols.table compiler_state Symbols.unlock in
   let (state, query) =
     ToDBL.query_preterm_of_ast ~depth:initial_depth active_macros
       compiler_state t in
@@ -3041,6 +3046,8 @@ let query_of_term compiler_state assembled_program f =
   let type_abbrevs = assembled_program.Assembled.type_abbrevs in
   let modes = C.Map.map fst assembled_program.Assembled.modes in
   let active_macros = assembled_program.Assembled.toplevel_macros in
+  let compiler_state =
+    State.update Symbols.table compiler_state Symbols.unlock in
   let (state, query) =
     ToDBL.query_preterm_of_function ~depth:initial_depth active_macros
       compiler_state (f ~depth:initial_depth) in
