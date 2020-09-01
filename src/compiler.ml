@@ -30,12 +30,6 @@ let compiler_flags = D.State.declare ~name:"elpi:compiler:flags"
   ~execution_is_over:(fun _ -> None)
   ~init:(fun () -> default_flags)
 
-let init_state flags =
-  let state = D.State.init () in
-  let state = D.State.set compiler_flags state flags in
-  let state = D.State.set D.while_compiling state true in
-  state
-
 let rec filter_if ({ defined_variables } as flags) proj = function
   | [] -> []
   | c :: rest ->
@@ -71,6 +65,9 @@ module Symbols : sig
   type table
   val table : table D.State.component
   val compile_table : table -> D.symbol_table
+  val lock : table -> table
+  val locked : table -> bool
+  val equal : table -> table -> bool
 
   val build_shift : base:D.State.t -> table -> D.State.t * D.constant D.Constants.Map.t
 
@@ -81,9 +78,15 @@ type table = {
   c2s : string D.Constants.Map.t;
   c2t : D.term D.Constants.Map.t;
   last_global : int;
-  locked : bool; (* prevents new allocation in read_term *)
+  locked : bool; (* prevents new allocation *)
+  uuid : Util.UUID.t;
 }
 [@@deriving show]
+let locked { locked } = locked
+let lock t = { t with locked = true }
+let uuid { uuid } = uuid
+let equal t1 t2 =
+  locked t1 && locked t2 && uuid t1 = uuid t2
 
 let table = D.State.declare ~name:"elpi:compiler:symbol_table"
   ~pp:pp_table
@@ -106,6 +109,7 @@ let table = D.State.declare ~name:"elpi:compiler:symbol_table"
     c2s;
     c2t;
     locked = false;
+    uuid = Util.UUID.make ();
   })
 
 let compile_table t =
@@ -119,7 +123,7 @@ let compile_table t =
     frozen_constants = t.last_global;
   }
 
-let allocate_global_symbol_aux x ({ c2s; c2t; ast2ct; last_global; locked } as table) =
+let allocate_global_symbol_aux x ({ c2s; c2t; ast2ct; last_global; locked; uuid } as table) =
   try table, F.Map.find x ast2ct
   with Not_found ->
     if locked then
@@ -131,7 +135,7 @@ let allocate_global_symbol_aux x ({ c2s; c2t; ast2ct; last_global; locked } as t
     let c2s = D.Constants.Map.add n (F.show x) c2s in
     let c2t = D.Constants.Map.add n xx c2t in
     let ast2ct = F.Map.add x p ast2ct in
-    { c2s; c2t; ast2ct; last_global; locked }, p
+    { c2s; c2t; ast2ct; last_global; locked; uuid }, p
 
 let allocate_global_symbol state x =
   if not (D.State.get D.while_compiling state) then
@@ -153,14 +157,12 @@ let show state n =
     if n >= 0 then "c" ^ string_of_int n
     else "SYMBOL" ^ string_of_int n
 
-let allocate_bound_symbol_aux n ({ c2s; c2t; ast2ct; last_global; locked } as table) =
+let allocate_bound_symbol_aux n ({ c2s; c2t; ast2ct; last_global; locked; uuid } as table) =
   try table, D.Constants.Map.find n c2t
   with Not_found ->
-    if locked then
-      error ("allocating new global symbol "^string_of_int n^"at runtime");
     let xx = D.Term.Const n in
     let c2t = D.Constants.Map.add n xx c2t in
-    { c2s; c2t; ast2ct; last_global; locked }, xx
+    { c2s; c2t; ast2ct; last_global; locked; uuid }, xx
 
 let allocate_bound_symbol state n =
   if not (D.State.get D.while_compiling state) then
@@ -420,7 +422,7 @@ module Assembled = struct
 type program = {
   types : Structured.typ list;
   type_abbrevs : type_abbrev_declaration C.Map.t;
-  modes : mode C.Map.t;
+  modes : (mode * Loc.t) C.Map.t;
   clauses : (preterm,attribute) Ast.Clause.t list;
   chr : (constant list * prechr_rule list) list;
   local_names : int;
@@ -431,6 +433,16 @@ and attribute = {
   id : string option;
 }
 [@@deriving show]
+
+let empty = {
+  types = [];
+  type_abbrevs = C.Map.empty;
+  modes = C.Map.empty;
+  clauses = [];
+  chr = [];
+  local_names = 0;
+  toplevel_macros = F.Map.empty;
+}
 
 end
 
@@ -1734,8 +1746,8 @@ end = struct (* {{{ *)
       { x with Ast.Clause.body = { term; amap; loc; spilling = false } }
 
   let run state ({ Assembled.clauses; modes; types; chr } as p) =
-    let clauses = List.map (spill_clause state (fun c -> C.Map.find c modes) types) clauses in
-    let chr = List.map (spill_chr state (fun c -> C.Map.find c modes) types) chr in
+    let clauses = List.map (spill_clause state (fun c -> fst @@ C.Map.find c modes) types) clauses in
+    let chr = List.map (spill_chr state (fun c -> fst @@ C.Map.find c modes) types) chr in
     { p with Assembled.clauses; chr }
 
   let spill_preterm state types modes ({ term; amap; loc; spilling } as x) =
@@ -1753,16 +1765,30 @@ type compilation_unit = {
   symbol_table : Symbols.table;
   builtins : Builtins.t;
   flags : flags;
+  name : string;
 }
+
+let init_state ?symbols_of flags =
+  let state = D.State.init () in
+  let state = D.State.set compiler_flags state flags in
+  let state = D.State.set D.while_compiling state true in
+  let state =
+    match symbols_of with
+    | None -> state
+    | Some previous -> D.State.set Symbols.table state (Symbols.lock (D.State.get Symbols.table previous)) in
+  state
 
 module Assemble : sig
 
   val run : header:compilation_unit ->
     compilation_unit list -> State.t * Assembled.program
 
+  val extend : State.t * Assembled.program ->
+    compilation_unit list -> State.t * Assembled.program
+
 end = struct (* {{{ *)
 
-  let sort_insertion l =
+  let sort_insertion old l =
     let add s { Ast.Clause.attributes = { Assembled.id }; loc } =
       match id with
       | None -> s
@@ -1797,7 +1823,7 @@ end = struct (* {{{ *)
           let x = compile_clause x in
           aux (add seen x) (x :: acc) xs
     in
-    aux StrMap.empty  [] l
+    aux StrMap.empty (List.rev old) l
 
   (* let shift_pp fmt ({ Data.Constants.c2s},s,{ Data.Constants.c2s = c2s2 }) =
     Format.fprintf fmt "{{ @[<hov 2>";
@@ -1807,37 +1833,43 @@ end = struct (* {{{ *)
     Format.fprintf fmt "@] }}" *)
   let clause_name { Ast.Clause.attributes = { Ast.Structured.ifexpr } } = ifexpr
 
-  let run ~header:({ symbol_table; builtins; code; flags } as h) ul =
-      let nunits_with_locals =
-        (h :: ul) |> List.filter (fun {code = { Flat.local_names = x }} -> x > 0) |> List.length in
 
-      if nunits_with_locals > 0 then
-        error "Only 1 compilation unit is supported when local directives are used";
-
-      if ul |> List.exists (fun { builtins = b } -> not (Builtins.is_empty b)) then
-        error "All units should share the same builtins";
-
-      let state = init_state default_flags in
-      let state = State.set Builtins.builtins state builtins in
-      let state = State.set Symbols.table state symbol_table in
-
-      let state, { Flat.clauses; types; type_abbrevs; modes; chr; local_names; toplevel_macros } =
-        List.fold_left (fun (state, { Flat.clauses = cl1; types = t1; type_abbrevs = ta1; modes = m1; chr = c1; toplevel_macros = tm1 })
-          { symbol_table; code; flags } ->
+let extend (state, (code : Assembled.program)) ul =
+  let state, clauses_rev, types, type_abbrevs, modes, chr_rev =
+    List.fold_left (fun (state, cl1, t1, ta1, m1, c1) { symbol_table; code; flags; name } ->
+      let state, { Flat.clauses = cl2; types = t2; type_abbrevs = ta2; modes = m2; chr = c2; toplevel_macros = _ } =
+        if Symbols.equal symbol_table (State.get Symbols.table state)
+        then state, code (* no need to relocate *)
+        else
           let state, shift = Symbols.build_shift ~base:state symbol_table in
-          let { Flat.clauses = cl2; types = t2; type_abbrevs = ta2; modes = m2; chr = c2; toplevel_macros = _ } as xxx =
-            Flatten.relocate state shift code in
-          let modes = ToDBL.merge_modes state m1 m2 in
-          let type_abbrevs = ToDBL.merge_type_abbrevs state ta1 ta2 in
-          let types = ToDBL.merge_types t1 t2 in
-          let chr = c1 @ c2 in
-          let toplevel_macros = tm1 in
-          let cl2 = filter_if flags clause_name cl2 in
-          state, { Flat.clauses = cl1 @ cl2; types; type_abbrevs; modes; chr; local_names = 0; toplevel_macros }
-        ) (state, { code with clauses = filter_if flags clause_name code.Flat.clauses }) ul in
-      let clauses = sort_insertion clauses in
-      let modes = C.Map.map fst modes in
-      state, { Assembled.clauses; types; type_abbrevs; modes; chr; local_names; toplevel_macros }
+          let code = Flatten.relocate state shift code in
+          state, code in
+      let modes = ToDBL.merge_modes state m1 m2 in
+      let type_abbrevs = ToDBL.merge_type_abbrevs state ta1 ta2 in
+      let types = ToDBL.merge_types t1 t2 in
+      let cl2 = filter_if flags clause_name cl2 in
+      state, cl2 :: cl1, types, type_abbrevs, modes, c2 :: c1
+    ) (state, [], code.Assembled.types, code.Assembled.type_abbrevs, code.Assembled.modes, []) ul in
+  let clauses = List.concat (List.rev clauses_rev) in
+  let clauses = sort_insertion code.clauses clauses in
+  let chr = List.concat (code.Assembled.chr :: List.rev chr_rev) in
+  state, { Assembled.clauses; types; type_abbrevs; modes; chr; local_names = code.Assembled.local_names; toplevel_macros = code.Assembled.toplevel_macros }
+
+let run ~header:({ symbol_table; builtins; code; flags } as h) ul =
+  let nunits_with_locals =
+    (h :: ul) |> List.filter (fun {code = { Flat.local_names = x }} -> x > 0) |> List.length in
+
+  if nunits_with_locals > 0 then
+    error "Only 1 compilation unit is supported when local directives are used";
+
+  if ul |> List.exists (fun { builtins = b } -> not (Builtins.is_empty b)) then
+    error "All units should share the same builtins";
+
+  let state = init_state default_flags in
+  let state = State.set Builtins.builtins state builtins in
+  let state = State.set Symbols.table state symbol_table in
+
+  extend (state, { Assembled.empty with toplevel_macros = code.toplevel_macros; local_names = code.local_names }) (h :: ul)
 
 end (* }}} *)
 
@@ -1853,13 +1885,13 @@ let w_symbol_table s f x =
   f x
 
 (* Compiler passes *)
-let unit_of_ast s ?header p =
+let unit_of_ast s ?header ~name p =
   let { print_passes } = State.get compiler_flags s in
 
   if print_passes then
     Format.eprintf "== AST ================@\n@[<v 0>%a@]@\n"
       Ast.Program.pp p;
- 
+
   let p = RecoverStructure.run s p in
 
   if print_passes then
@@ -1871,23 +1903,24 @@ let unit_of_ast s ?header p =
     | Some { code = { Flat.toplevel_macros }} -> toplevel_macros
     | None -> F.Map.empty in
   let s, p = ToDBL.run s ~toplevel_macros p in
- 
+
   if print_passes then
     Format.eprintf "== Structured ================@\n@[<v 0>%a@]@\n"
       (w_symbol_table s Structured.pp_program) p;
- 
+
   let p = Flatten.run s p in
- 
+
   if print_passes then
     Format.eprintf "== Flat ================@\n@[<v 0>%a@]@\n"
       (w_symbol_table s Flat.pp_program) p;
- 
+
  {
     version = "%%VERSION_NUM%%";
     code = p;
     symbol_table = State.get Symbols.table s;
     builtins = State.get Builtins.builtins s;
     flags = State.get compiler_flags s;
+    name;
   }
 ;;
 
@@ -1907,13 +1940,17 @@ let assemble_units ~header units =
     Format.eprintf "== Spilled ================@\n@[<v 0>%a@]@\n"
       (w_symbol_table s Assembled.pp_program) p;
 
- s, p
+ State.update Symbols.table s Symbols.lock, p
 ;;
 
 let program_of_ast s ~header p =
-  let u = unit_of_ast s p in
+  let u = unit_of_ast s ~name:"program" p in
   assemble_units ~header [u]
 
+let extend (s,p) ul =
+  let s, p = Assemble.extend (s,p) ul in
+  let p = Spill.run s p in
+  s, p
 
 let is_builtin state tname =
   Builtins.is_declared state tname
@@ -1990,7 +2027,7 @@ let query_of_ast compiler_state assembled_program t =
   let initial_depth = assembled_program.Assembled.local_names in
   let types = assembled_program.Assembled.types in
   let type_abbrevs = assembled_program.Assembled.type_abbrevs in
-  let modes = assembled_program.Assembled.modes in
+  let modes = C.Map.map fst assembled_program.Assembled.modes in
   let active_macros = assembled_program.Assembled.toplevel_macros in
   let state, query =
     ToDBL.query_preterm_of_ast ~depth:initial_depth active_macros compiler_state t in
@@ -2019,7 +2056,7 @@ let query_of_term compiler_state assembled_program f =
   let initial_depth = assembled_program.Assembled.local_names in
   let types = assembled_program.Assembled.types in
   let type_abbrevs = assembled_program.Assembled.type_abbrevs in
-  let modes = assembled_program.Assembled.modes in
+  let modes = C.Map.map fst assembled_program.Assembled.modes in
   let active_macros = assembled_program.Assembled.toplevel_macros in
   let state, query =
     ToDBL.query_preterm_of_function
@@ -2151,24 +2188,28 @@ let run
       state, List.fold_left (fun x y -> CHR.add_rule clique y x) chr rules)
     (state, CHR.empty) chr in
   let indexing =
-    let known =
-      let ty = List.map (fun { Structured.decl = { tname }} -> tname) types in
-      let mo = C.Map.bindings modes |> List.map fst in
-      List.fold_right C.Set.add (mo @ ty) C.Set.empty in
-    C.Set.fold (fun name m ->
+    let add_indexing_for name tindex map =
       let mode = try C.Map.find name modes with Not_found -> [] in
-      let index =
-        let indexes =
-          map_filter (fun { Structured.decl = { tname }; tindex } ->
-              match tindex with
-              | Indexed l when tname == name -> Some l
-              | _ -> None) types |> uniq in
-        match indexes with
-        | [] -> [1]
-        | [x] -> x
-        | _ -> error ("multiple and inconsistent indexing attributes for " ^
-                      Symbols.show state name) in
-      C.Map.add name (mode,chose_indexing state name index) m) known C.Map.empty in
+      let declare_index, index =
+        match tindex with
+        | Some (Ast.Structured.Indexed l) -> true, chose_indexing state name l
+        | _ -> false, chose_indexing state name [1] in
+      try
+        let _, old_tindex = C.Map.find name map in
+        if old_tindex <> index then
+          if old_tindex <> MapOn 1 && declare_index then
+            error ("multiple and inconsistent indexing attributes for " ^
+                      Symbols.show state name)
+          else
+            if declare_index then C.Map.add name (mode,index) map
+            else map
+        else
+          map
+      with Not_found ->
+        C.Map.add name (mode,index) map in
+    let map = List.fold_left (fun acc { Structured.decl = { tname }; tindex} -> add_indexing_for tname (Some tindex) acc) C.Map.empty types in
+    let map = C.Map.fold (fun k _ m -> add_indexing_for k None m) modes map in
+    map in
   let state, clauses =
     map_acc (compile_clause modes initial_depth) state clauses in
   let prolog_program = R.make_index ~depth:initial_depth ~indexing clauses in

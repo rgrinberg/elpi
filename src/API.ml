@@ -71,7 +71,7 @@ let init ~builtins ~basedir:cwd argv =
             Util.Loc.(loc.source_stop - loc.line_starts_at));
       Util.anomaly ~loc msg) in
   let header =
-    try Compiler.unit_of_ast state (List.concat header)
+    try Compiler.unit_of_ast state (List.concat header) ~name:"header"
     with Compiler.CompileError(loc,msg) -> Util.anomaly ?loc msg in
   (parsing_state, header), new_argv
 
@@ -161,7 +161,8 @@ module Compile = struct
   }
   let default_flags = Compiler.default_flags
   let optimize = Compiler.optimize_query
-  let unit ~elpi:(_,header) ~flags x = Compiler.unit_of_ast (Compiler.init_state flags) ~header x
+  let unit ?follows ~elpi:(_,header) ~flags ~name x = Compiler.unit_of_ast ~name (Compiler.init_state ?symbols_of:(Util.option_map fst follows) flags) ~header x
+  let extend ~base ul = Compiler.extend base ul
   let assemble ~elpi:(_,header) = Compiler.assemble_units ~header
 
 end
