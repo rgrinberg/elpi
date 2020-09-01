@@ -1,4 +1,4 @@
-(*c45f10849b8b9632753619aed5818a045fd42db1 *src/compiler.mli *)
+(*bef9b2a405cc0135c2a311e3f6e3dcdc2bb00acc *src/compiler.mli *)
 #1 "src/compiler.mli"
 open Util
 open Data
@@ -15,9 +15,7 @@ val init_state : ?symbols_of:State.t -> flags -> State.t
 val program_of_ast :
   State.t -> header:compilation_unit -> Ast.Program.t -> (State.t * program)
 val unit_of_ast :
-  State.t ->
-    ?header:compilation_unit ->
-      name:string -> Ast.Program.t -> compilation_unit
+  State.t -> ?header:compilation_unit -> Ast.Program.t -> compilation_unit
 val assemble_units :
   header:compilation_unit -> compilation_unit list -> (State.t * program)
 val extend :

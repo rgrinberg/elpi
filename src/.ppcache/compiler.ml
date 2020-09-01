@@ -1,4 +1,4 @@
-(*6bbe45e532b633c4473d46368896025b479339e7 *src/compiler.ml *)
+(*49a72e1b28868827361916642f9df1acdb97f37b *src/compiler.ml *)
 #1 "src/compiler.ml"
 open Util
 module F = Ast.Func
@@ -2756,8 +2756,7 @@ type compilation_unit =
   code: Flat.program ;
   symbol_table: Symbols.table ;
   builtins: Builtins.t ;
-  flags: flags ;
-  name: string }
+  flags: flags }
 let init_state ?symbols_of  flags =
   let state = D.State.init () in
   let state = D.State.set compiler_flags state flags in
@@ -2822,7 +2821,7 @@ module Assemble :
       let (state, clauses_rev, types, type_abbrevs, modes, chr_rev) =
         List.fold_left
           (fun (state, cl1, t1, ta1, m1, c1) ->
-             fun { symbol_table; code; flags; name } ->
+             fun { symbol_table; code; flags } ->
                let (state,
                     { Flat.clauses = cl2; types = t2; type_abbrevs = ta2;
                       modes = m2; chr = c2; toplevel_macros = _ })
@@ -2883,7 +2882,7 @@ let w_symbol_table s f x =
   let table = Symbols.compile_table @@ (State.get Symbols.table s) in
   let pp_ctx = { table; uv_names = (ref ((PtrMap.empty ()), 0)) } in
   Util.set_spaghetti_printer Data.pp_const (R.Pp.pp_constant ~pp_ctx); f x
-let unit_of_ast s ?header  ~name  p =
+let unit_of_ast s ?header  p =
   let { print_passes } = State.get compiler_flags s in
   if print_passes
   then
@@ -2914,8 +2913,7 @@ let unit_of_ast s ?header  ~name  p =
        code = p;
        symbol_table = (State.get Symbols.table s);
        builtins = (State.get Builtins.builtins s);
-       flags = (State.get compiler_flags s);
-       name
+       flags = (State.get compiler_flags s)
      })))
 let assemble_units ~header  units =
   let (s, p) = Assemble.run ~header units in
@@ -2931,7 +2929,7 @@ let assemble_units ~header  units =
        (w_symbol_table s Assembled.pp_program) p;
    ((State.update Symbols.table s Symbols.lock), p))
 let program_of_ast s ~header  p =
-  let u = unit_of_ast s ~name:"program" p in assemble_units ~header [u]
+  let u = unit_of_ast s p in assemble_units ~header [u]
 let extend (s, p) ul =
   let (s, p) = Assemble.extend (s, p) ul in let p = Spill.run s p in (s, p)
 let is_builtin state tname = Builtins.is_declared state tname

@@ -1765,7 +1765,6 @@ type compilation_unit = {
   symbol_table : Symbols.table;
   builtins : Builtins.t;
   flags : flags;
-  name : string;
 }
 
 let init_state ?symbols_of flags =
@@ -1836,7 +1835,7 @@ end = struct (* {{{ *)
 
 let extend (state, (code : Assembled.program)) ul =
   let state, clauses_rev, types, type_abbrevs, modes, chr_rev =
-    List.fold_left (fun (state, cl1, t1, ta1, m1, c1) { symbol_table; code; flags; name } ->
+    List.fold_left (fun (state, cl1, t1, ta1, m1, c1) { symbol_table; code; flags } ->
       let state, { Flat.clauses = cl2; types = t2; type_abbrevs = ta2; modes = m2; chr = c2; toplevel_macros = _ } =
         if Symbols.equal symbol_table (State.get Symbols.table state)
         then state, code (* no need to relocate *)
@@ -1885,7 +1884,7 @@ let w_symbol_table s f x =
   f x
 
 (* Compiler passes *)
-let unit_of_ast s ?header ~name p =
+let unit_of_ast s ?header p =
   let { print_passes } = State.get compiler_flags s in
 
   if print_passes then
@@ -1920,7 +1919,6 @@ let unit_of_ast s ?header ~name p =
     symbol_table = State.get Symbols.table s;
     builtins = State.get Builtins.builtins s;
     flags = State.get compiler_flags s;
-    name;
   }
 ;;
 
@@ -1944,7 +1942,7 @@ let assemble_units ~header units =
 ;;
 
 let program_of_ast s ~header p =
-  let u = unit_of_ast s ~name:"program" p in
+  let u = unit_of_ast s p in
   assemble_units ~header [u]
 
 let extend (s,p) ul =

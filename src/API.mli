@@ -171,7 +171,7 @@ module Compile : sig
        typical example is a new clause for an exising predicate.
      *)
   type compilation_unit
-  val unit : ?follows:program -> elpi:Setup.elpi -> flags:flags -> name:string -> Ast.program -> compilation_unit
+  val unit : ?follows:program -> elpi:Setup.elpi -> flags:flags -> Ast.program -> compilation_unit
   val assemble : elpi:Setup.elpi -> compilation_unit list -> program
   val extend : base:program -> compilation_unit list -> program
 

@@ -1,4 +1,4 @@
-(*d3f981922abda8f38373b8f9a1895d003b4a01c4 *src/API.mli *)
+(*865a1615df531b20de3e4bdbbd5b692c0b101f88 *src/API.mli *)
 #1 "src/API.mli"
 [@@@ocaml.text " This module is the API for clients of the Elpi library. "]
 [@@@ocaml.text
@@ -100,8 +100,7 @@ sig
   type compilation_unit
   val unit :
     ?follows:program ->
-      elpi:Setup.elpi ->
-        flags:flags -> name:string -> Ast.program -> compilation_unit
+      elpi:Setup.elpi -> flags:flags -> Ast.program -> compilation_unit
   val assemble : elpi:Setup.elpi -> compilation_unit list -> program
   val extend : base:program -> compilation_unit list -> program
   val query : program -> Ast.query -> unit query

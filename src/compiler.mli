@@ -22,7 +22,7 @@ type compilation_unit
 val init_state : ?symbols_of:State.t -> flags -> State.t
 
 val program_of_ast : State.t -> header:compilation_unit -> Ast.Program.t -> State.t * program
-val unit_of_ast : State.t -> ?header:compilation_unit -> name:string -> Ast.Program.t -> compilation_unit
+val unit_of_ast : State.t -> ?header:compilation_unit -> Ast.Program.t -> compilation_unit
 val assemble_units : header:compilation_unit -> compilation_unit list -> State.t * program
 val extend : State.t * program -> compilation_unit list -> State.t * program
 
